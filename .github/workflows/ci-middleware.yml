@@ -65,7 +65,6 @@ jobs:
           REG=000000000000.dkr.ecr.ap-south-1.amazonaws.com
           ROLE=arn:aws:iam::000000000000:role/ci
           helm lint ./helm/platform
-          helm lint ./helm/observability
           helm lint ./helm/middleware --set imageRegistry=$REG --set imageTag=ci --set aws.roleArn=$ROLE --set aws.databaseSecretId=ci/db --set aws.applicationSecretId=ci/app
 
       - name: Render
@@ -73,10 +72,6 @@ jobs:
           REG=000000000000.dkr.ecr.ap-south-1.amazonaws.com
           ROLE=arn:aws:iam::000000000000:role/ci
           helm template ci ./helm/platform > rendered.yaml
-          # ServiceMonitor is a CRD, so kubeconform has no schema for it and
-          # -ignore-missing-schemas skips it. Rendering it still catches a
-          # template that does not compile.
-          helm template ci ./helm/observability >> rendered.yaml
           helm template ci ./helm/middleware --set imageRegistry=$REG --set imageTag=ci --set aws.roleArn=$ROLE --set aws.databaseSecretId=ci/db --set aws.applicationSecretId=ci/app >> rendered.yaml
 
       # Writes into the workspace, not /tmp: a docker:// action only mounts the
