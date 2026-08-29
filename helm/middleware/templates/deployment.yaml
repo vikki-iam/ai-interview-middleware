@@ -5,8 +5,9 @@ metadata:
 spec:
   replicas: {{ .Values.replicas }}
 
-  # Stop the old pod before starting the new one.
-  # The disk can only attach to one pod, so a rolling update would hang.
+  # Stop the old pod before starting the new one. Uploaded files live inside
+  # the pod now, so two pods running at once would each serve a different set
+  # of resumes - one old, one empty.
   strategy:
     type: Recreate
 
@@ -25,8 +26,8 @@ spec:
       # This is what gives the pod its AWS identity
       serviceAccountName: middleware
 
-      # The app runs as user 10001, but a new disk belongs to root.
-      # fsGroup hands the disk to 10001 so the app can write to it.
+      # The app runs as user 10001, but a fresh volume belongs to root.
+      # fsGroup hands it to 10001 so the app can write uploads into it.
       securityContext:
         runAsUser: 10001
         runAsGroup: 10001
@@ -63,15 +64,21 @@ spec:
             limits:
               memory: 1Gi
 
-          # Mount the disk from pvc.yaml
+          # Scratch space for uploaded resumes. See the volume below.
           volumeMounts:
             - name: resumes
               mountPath: {{ .Values.storage.path }}
 
+      # emptyDir, not a PersistentVolumeClaim: the directory is created on the
+      # node when the pod starts and deleted when it stops. Uploaded resumes do
+      # NOT survive a restart or a redeploy.
+      #
+      # That is the deliberate trade for needing no EBS CSI driver and no
+      # StorageClass. For durable uploads, set APP_STORAGE_TYPE=s3 and give the
+      # pod's IRSA role access to a bucket.
       volumes:
         - name: resumes
-          persistentVolumeClaim:
-            claimName: resume-storage
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -10,7 +10,7 @@ imageTag: ""
 imageRepository: ai-interview-platform
 
 
-# Keep 1. The disk can only attach to one pod at a time.
+# Keep 1. Each pod would hold its own copy of the uploaded files.
 replicas: 1
 
 # The pod reads its own secrets from AWS. There is no Kubernetes Secret, and no
@@ -30,6 +30,8 @@ aws:
   databaseSecretId: ""
   applicationSecretId: ""
 
+# Where the app writes uploaded resumes inside the container. Backed by an
+# emptyDir, so the files are lost when the pod stops. No size here: an emptyDir
+# borrows the node's disk rather than claiming a volume.
 storage:
-  size: 5Gi
   path: /var/lib/ai-interview/resumes
