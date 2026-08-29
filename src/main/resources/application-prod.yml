@@ -1,0 +1,44 @@
+# =============================================================================
+# prod profile - Amazon EKS.
+#
+# Credentials come from AWS Secrets Manager through the default credential
+# provider chain (IRSA). No AWS access keys anywhere. Nothing sensitive is
+# echoed by actuator, and logs are JSON for Loki/CloudWatch ingestion.
+# =============================================================================
+spring:
+  jpa:
+    show-sql: false
+  flyway:
+    # Migrations are applied by the middleware on rollout. Set to false and use
+    # the Helm pre-upgrade migration Job if you prefer decoupled schema changes.
+    enabled: ${FLYWAY_ENABLED:true}
+    clean-disabled: true
+
+app:
+  secrets:
+    provider: ${APP_SECRETS_PROVIDER:aws}
+  datasource:
+    ssl-mode: ${DB_SSL_MODE:require}
+    maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+    minimum-idle: ${DB_POOL_MIN_IDLE:5}
+  storage:
+    type: ${APP_STORAGE_TYPE:s3}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+      show-components: never
+
+springdoc:
+  swagger-ui:
+    enabled: ${SWAGGER_UI_ENABLED:false}
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:WARN}
+    ai.interview.middleware: ${LOG_LEVEL_APP:INFO}

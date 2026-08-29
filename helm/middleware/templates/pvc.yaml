@@ -1,0 +1,12 @@
+# Asks AWS for a disk to store uploaded resumes.
+# Stays "Pending" until a pod uses it - that is normal.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: resume-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}

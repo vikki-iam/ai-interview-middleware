@@ -1,0 +1,6 @@
+apiVersion: v2
+name: middleware
+description: Spring Boot API. Owns the database schema. Adds a PVC, fsGroup, and a Recreate strategy.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

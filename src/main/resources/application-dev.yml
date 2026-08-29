@@ -1,0 +1,34 @@
+# =============================================================================
+# dev profile - local Docker Compose / laptop development.
+# Human-readable logs, verbose health details, permissive CORS for Vite.
+# =============================================================================
+spring:
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,env,configprops,loggers,mappings
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+
+app:
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
+  storage:
+    local:
+      root: ${APP_STORAGE_LOCAL_ROOT:./data/resumes}
+
+logging:
+  level:
+    ai.interview.middleware: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

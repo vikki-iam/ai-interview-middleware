@@ -1,0 +1,42 @@
+# =============================================================================
+# test profile - CI integration runs against an ephemeral PostgreSQL service.
+# Structured logging stays on so CI log assertions match production format.
+# Flyway still owns the schema: ddl-auto remains `validate`.
+# =============================================================================
+spring:
+  jpa:
+    show-sql: false
+  flyway:
+    clean-disabled: false
+
+app:
+  secrets:
+    provider: env
+    env:
+      db-host: ${DB_HOST:localhost}
+      db-port: ${DB_PORT:5432}
+      db-name: ${DB_NAME:ai_interview_test}
+      db-username: ${DB_USERNAME:ai_interview_app}
+      db-password: ${DB_PASSWORD:test-password}
+      jwt-signing-key: ${JWT_SIGNING_KEY:test-profile-signing-key-with-at-least-32-bytes-of-entropy}
+      ai-service-api-key: ${AI_SERVICE_API_KEY:test-internal-api-key}
+  datasource:
+    maximum-pool-size: 5
+    minimum-idle: 1
+  storage:
+    type: local
+    local:
+      root: ${APP_STORAGE_LOCAL_ROOT:./target/test-resumes}
+  ai:
+    base-url: ${AI_SERVICE_BASE_URL:http://localhost:8000}
+    max-attempts: 1
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    ai.interview.middleware: DEBUG

@@ -1,0 +1,212 @@
+# =============================================================================
+# Base configuration. Every environment-specific value is an environment
+# variable with a development-safe default, so the same image runs on
+# Docker Compose and Kubernetes with no rebuild.
+#
+# The JDBC URL and credentials are deliberately absent: the DataSource is built
+# at runtime from SecretService (env vars locally, AWS Secrets Manager on EKS).
+# =============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain
+  error:
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
+  tomcat:
+    threads:
+      max: ${SERVER_TOMCAT_MAX_THREADS:200}
+    connection-timeout: 20s
+    max-http-form-post-size: 12MB
+  forward-headers-strategy: framework
+
+spring:
+  application:
+    name: ai-interview-middleware
+  main:
+    banner-mode: off
+  lifecycle:
+    # Upper bound on in-flight request draining after SIGTERM. Must stay below
+    # the pod terminationGracePeriodSeconds configured in Helm.
+    timeout-per-shutdown-phase: 30s
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          batch_size: 32
+        default_batch_fetch_size: 32
+        order_inserts: true
+        order_updates: true
+        query:
+          in_clause_parameter_padding: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    clean-disabled: true
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 10MB
+      max-request-size: 12MB
+      file-size-threshold: 1MB
+  data:
+    web:
+      pageable:
+        default-page-size: 20
+        # Hard cap so a `?size=100000` cannot be used to exhaust heap.
+        max-page-size: 100
+        one-indexed-parameters: false
+
+# -----------------------------------------------------------------------------
+# Observability. /actuator/health/liveness and /readiness back the Kubernetes
+# probes; /actuator/prometheus is scraped by Prometheus.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      show-components: never
+      group:
+        liveness:
+          include: livenessState,ping
+        # `aiService` is intentionally NOT part of readiness: an AI outage must
+        # degrade question generation, not remove every middleware pod from the
+        # Service and take down login and candidate CRUD with it. It is still
+        # reported as a component of /actuator/health for dashboards and alerts.
+        readiness:
+          include: readinessState,db
+    prometheus:
+      access: read_only
+  health:
+    db:
+      enabled: true
+    diskspace:
+      enabled: false
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 100ms,300ms,500ms,1s,2s
+  observations:
+    key-values:
+      application: ${spring.application.name}
+  info:
+    env:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    version: '@project.version@'
+    component: middleware
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
+    display-request-duration: true
+  default-produces-media-type: application/json
+
+# -----------------------------------------------------------------------------
+# Application configuration (bound to typed @ConfigurationProperties classes).
+# -----------------------------------------------------------------------------
+app:
+  api:
+    base-path: /api
+  secrets:
+    # `env` reads the values below. `aws` reads AWS Secrets Manager using the
+    # default credential provider chain (IRSA in-cluster). No code change.
+    provider: ${APP_SECRETS_PROVIDER:env}
+    env:
+      db-host: ${DB_HOST:localhost}
+      db-port: ${DB_PORT:5432}
+      db-name: ${DB_NAME:ai_interview}
+      db-username: ${DB_USERNAME:ai_interview_app}
+      db-password: ${DB_PASSWORD:change-me-locally}
+      jwt-signing-key: ${JWT_SIGNING_KEY:local-dev-only-signing-key-please-replace-with-48-random-bytes}
+      ai-service-api-key: ${AI_SERVICE_API_KEY:local-dev-internal-api-key}
+    aws:
+      region: ${AWS_REGION:}
+      database-secret-id: ${APP_SECRETS_AWS_DATABASE_SECRET_ID:}
+      application-secret-id: ${APP_SECRETS_AWS_APPLICATION_SECRET_ID:}
+      cache-ttl: PT10M
+  datasource:
+    maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+    minimum-idle: ${DB_POOL_MIN_IDLE:2}
+    connection-timeout: PT10S
+    idle-timeout: PT5M
+    max-lifetime: PT25M
+    validation-timeout: PT5S
+    ssl-mode: ${DB_SSL_MODE:prefer}
+  jwt:
+    issuer: ai-interview-platform
+    access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:PT30M}
+    refresh-token-ttl: ${JWT_REFRESH_TOKEN_TTL:PT8H}
+    clock-skew: PT30S
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3000}
+    allowed-methods: GET,POST,PUT,PATCH,DELETE,OPTIONS
+    allowed-headers: Authorization,Content-Type,Accept,X-Request-Id
+    exposed-headers: X-Request-Id
+    allow-credentials: false
+    max-age: PT30M
+  storage:
+    type: ${APP_STORAGE_TYPE:local}
+    max-file-size-bytes: ${APP_STORAGE_MAX_FILE_SIZE_BYTES:10485760}
+    allowed-content-types:
+      - application/pdf
+      - application/msword
+      - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+      - text/plain
+    local:
+      root: ${APP_STORAGE_LOCAL_ROOT:./data/resumes}
+    s3:
+      bucket: ${APP_STORAGE_S3_BUCKET:}
+      prefix: ${APP_STORAGE_S3_PREFIX:resumes}
+      region: ${AWS_REGION:}
+  ai:
+    base-url: ${AI_SERVICE_BASE_URL:http://localhost:8000}
+    connect-timeout: PT3S
+    read-timeout: PT45S
+    max-attempts: ${AI_SERVICE_MAX_ATTEMPTS:2}
+    health-path: /health/liveness
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    ai.interview.middleware: ${LOG_LEVEL_APP:INFO}
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN

@@ -1,0 +1,21 @@
+# A ServiceMonitor is not a Kubernetes object. It is a CRD the Prometheus
+# Operator installs, and the operator turns it into scrape config and reloads
+# Prometheus. That is why this chart has to be installed after
+# kube-prometheus-stack: without the CRD, `helm install` fails on an unknown kind.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: middleware
+spec:
+  # Matches the LABELS on the Service named middleware, not on its pods.
+  selector:
+    matchLabels:
+      app: middleware
+  endpoints:
+    # `port` is the Service port NAME, not a number. A number here is a silent
+    # no-op: the ServiceMonitor is accepted and the target list stays empty.
+    - port: http
+      # Spring Boot exposes Micrometer here. It is in the actuator's exposure
+      # list in application.yml, which is why no code change was needed.
+      path: /actuator/prometheus
+      interval: {{ .Values.scrapeInterval }}

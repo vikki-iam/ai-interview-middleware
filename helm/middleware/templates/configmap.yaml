@@ -1,0 +1,25 @@
+# Plain settings. No host, no user, no password - all of that comes from
+# Secrets Manager at startup.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: middleware-config
+data:
+  SPRING_PROFILES_ACTIVE: prod
+
+  # aws, not env: the app reads Secrets Manager itself using its IAM role
+  APP_SECRETS_PROVIDER: aws
+  APP_SECRETS_AWS_DATABASE_SECRET_ID: "{{ required "aws.databaseSecretId is required - pass --set aws.databaseSecretId=<project>/<env>/..." .Values.aws.databaseSecretId }}"
+  APP_SECRETS_AWS_APPLICATION_SECRET_ID: "{{ required "aws.applicationSecretId is required - pass --set aws.applicationSecretId=<project>/<env>/..." .Values.aws.applicationSecretId }}"
+  AWS_REGION: "{{ .Values.aws.region }}"
+
+  DB_SSL_MODE: require
+
+  # Creates the database tables on startup
+  FLYWAY_ENABLED: "true"
+
+  # How to reach the AI service - this is its Service name
+  AI_SERVICE_BASE_URL: http://ai-service:8000
+
+  APP_STORAGE_TYPE: local
+  APP_STORAGE_LOCAL_ROOT: "{{ .Values.storage.path }}"

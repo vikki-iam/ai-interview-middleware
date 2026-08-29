@@ -1,0 +1,35 @@
+imageRegistry: ""
+# No default. The deploy workflow passes the commit sha, so every running
+# pod is traceable to one commit. A default like "v1" would silently pin
+# whatever was tagged v1 months ago - for middleware that is the image
+# built before the AWS sts module was added, which crashes at startup.
+imageTag: ""
+# The repository path under the registry. bootstrap.sh passes what Terraform
+# built, which is shared across environments by default - so the image tested in
+# dev is the one promoted to prod.
+imageRepository: ai-interview-platform
+
+
+# Keep 1. The disk can only attach to one pod at a time.
+replicas: 1
+
+# The pod reads its own secrets from AWS. There is no Kubernetes Secret, and no
+# password is passed to Helm.
+#
+# No default. An empty annotation means the webhook injects no token, and
+# the pod dies at startup with "Unable to load credentials from any of the
+# providers in the chain" - which reads like a code bug, not a missing flag.
+# Get it from: terraform output -raw middleware_role_arn
+aws:
+  roleArn: ""
+  region: ap-south-1
+  # No default, for the same reason imageTag and roleArn have none. This said
+  # "ai-interview/prod/..." and no caller ever overrode it, so every deploy asked
+  # for prod's secrets - and the IRSA role, correctly scoped to its own
+  # environment, answered AccessDenied. The role was right; the request was wrong.
+  databaseSecretId: ""
+  applicationSecretId: ""
+
+storage:
+  size: 5Gi
+  path: /var/lib/ai-interview/resumes

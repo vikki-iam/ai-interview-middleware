@@ -1,0 +1,49 @@
+{{- if .Values.createIngress }}
+# One ALB in front of both services, so the browser talks to a single address.
+# That is what lets the frontend keep API_BASE_URL empty: /api is same-origin,
+# so there is no CORS and no environment-specific URL baked anywhere.
+#
+# Lives here rather than in the frontend chart because it names two services.
+# It also means deploying a service does not touch the ALB.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingressName }}
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+
+    # ip, not instance: pods hold real VPC addresses from the CNI, so the ALB
+    # reaches a pod directly instead of hopping through a NodePort on the host.
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # This is the frontend's health check. The middleware serves a different
+    # path, so its Service carries its own healthcheck-path annotation, which
+    # wins for its own target group.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # /api first. The ALB evaluates rules in order and "/" would swallow
+          # every request if it came first.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: middleware
+                port:
+                  number: 8080
+
+          # Everything else is the SPA. /actuator is deliberately absent:
+          # it exposes metrics and prometheus, which have no business being
+          # on a public listener. The ALB health check reaches the pod
+          # directly, so it does not need a rule here.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+{{- end }}

@@ -1,0 +1,50 @@
+# =============================================================================
+# GitLeaks configuration.
+#
+# Extends the default ruleset rather than replacing it, so every upstream rule
+# still applies and this file only records the deliberate exceptions.
+#
+# Every allowlist entry below is a value that is *published on purpose*: demo
+# credentials documented in the README, or the BCrypt hashes of those same demo
+# passwords in a seed migration. Nothing here weakens detection of a real secret.
+# =============================================================================
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID - this platform must never contain one"
+# The application authenticates exclusively through IRSA and the default
+# credential provider chain. An access key appearing anywhere in this repository
+# is a design violation as much as a leak, so it is called out explicitly rather
+# than relying on the generic upstream rule.
+regex = '''(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}'''
+keywords = ["AKIA", "ASIA", "ABIA", "ACCA", "A3T"]
+
+[allowlist]
+description = "Deliberately published development values"
+
+paths = [
+    # Documents the demo credentials by design.
+    '''\.env\.example$''',
+    # Lockfiles contain integrity hashes that pattern-match as high entropy.
+    '''package-lock\.json$''',
+    '''frontend/package-lock\.json$''',
+]
+
+regexes = [
+    # Seed-account passwords, published in the README and in NOTES.txt. They
+    # exist only in the demo migration and are documented as requiring rotation.
+    '''Admin@12345''',
+    '''Interviewer@12345''',
+    '''Candidate@12345''',
+    # BCrypt hashes of exactly those passwords, in V3__seed_reference_data.sql.
+    '''\$2[aby]\$10\$[./A-Za-z0-9]{53}''',
+    # Local-only placeholders. The string "change-me" is the tell: these are
+    # never valid anywhere, and CI fails if a real value replaces them.
+    '''change-me[a-z-]*''',
+    '''local-dev-[a-z-]+''',
+    '''dev-only-[a-z-]+''',
+    '''ci-only-[a-z-]+''',
+    '''test-password''',
+]

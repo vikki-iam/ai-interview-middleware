@@ -1,0 +1,12 @@
+# The cluster-wide things the app needs.
+# Secrets are NOT here - each pod reads them from AWS itself.
+createStorageClass: true
+
+# Needs the AWS Load Balancer Controller in kube-system. Without it the
+# Ingress is created and simply never gets an address, because nothing is
+# watching for ingressClassName: alb.
+createIngress: true
+
+# The Ingress object name. bootstrap.sh sets it to the cluster name so two
+# environments in one kubeconfig are told apart by `kubectl get ingress -A`.
+ingressName: ai-interview

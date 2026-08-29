@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ai-service
+spec:
+  selector:
+    matchLabels:
+      app: ai-service
+  endpoints:
+    - port: http
+      # At the root, not under the API prefix. backend/app/main.py says why:
+      # a kubelet probe should not have to know the API version, and moving
+      # /metrics would mean re-pointing every ServiceMonitor.
+      path: /metrics
+      interval: {{ .Values.scrapeInterval }}

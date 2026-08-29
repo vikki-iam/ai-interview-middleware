@@ -1,0 +1,153 @@
+# Build the middleware image, push it to ECR, deploy it with Helm.
+#
+# Separate from the AI service on purpose. The middleware uses a Recreate
+# rollout - the disk is ReadWriteOnce, so the old pod must die before the new
+# one starts. Redeploying it because the AI service changed would take the API
+# down for ~40 seconds for no reason.
+name: Deploy middleware
+
+on:
+  # Only after CI middleware passes.
+  workflow_run:
+    workflows: ["CI middleware"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+
+  # Every name below is built from these two. Deploying to another environment
+  # is a one-word change here plus the matching AWS_DEPLOY_ROLE_ARN secret.
+  PROJECT: ai-interview
+  ENVIRONMENT: dev
+
+  # The live cluster, built with eksctl rather than the monorepo's terraform,
+  # so it is not called ai-interview-dev. Everything runs in `default`, which
+  # is what the IRSA trust policies name:
+  #   system:serviceaccount:default:middleware
+  CLUSTER: ai-interview-1
+  NAMESPACE: default
+
+  # The commit CI actually tested. On a workflow_run event github.sha is the
+  # tip of the default branch, NOT the commit that triggered the run - using
+  # it would build one commit and tag it as another. Falls back to github.sha
+  # for a manual dispatch, where workflow_run is empty.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    # workflow_run fires when CI finishes, pass OR fail. Without this a red
+    # CI would still deploy.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same reason as SHA: the default checkout takes the branch tip,
+          # which may already be a newer commit than the one CI passed.
+          ref: ${{ env.SHA }}
+
+      - name: Log in to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # The repo root is the build context now - in the monorepo this was
+      # ./middleware.
+      - name: Build
+        run: docker build -t scan-target .
+
+      # Scan before the image leaves the runner. A vulnerable image never
+      # reaches ECR, so nothing can pull it by mistake later. Only fixable
+      # CRITICALs fail: an unpatched CVE in a base image cannot be actioned here
+      # and blocking on it would teach people to ignore the gate.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: scan-target
+          severity: CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: '1'
+
+      - name: Push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$PROJECT-$ENVIRONMENT-platform/middleware:$SHA"
+          docker tag scan-target "$IMAGE"
+          docker push "$IMAGE"
+
+      - name: Read account id
+        id: aws
+        run: echo "account=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_OUTPUT"
+
+      # The deploy role needs an EKS access entry, or this fails with
+      # "You must be logged in to the server"
+      - name: Get cluster credentials
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER"
+
+      # No database host and no password here. The pod reads them from Secrets
+      # Manager itself, using the IAM role passed below.
+      #
+      # Flyway runs on startup and owns the whole schema, including the ai_*
+      # tables the AI service maps. Deploy this before the AI service.
+      #
+      # --atomic = --wait plus an automatic rollback if the pods never become
+      # ready. Without it a failed rollout leaves the broken release running and
+      # only the workflow turns red.
+      - name: Deploy
+        id: deploy
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          helm upgrade --install middleware ./helm/middleware \
+            --namespace "$NAMESPACE" \
+            --set imageRegistry="$REGISTRY" \
+            --set imageRepository="$PROJECT-$ENVIRONMENT-platform" \
+            --set imageTag="$SHA" \
+            --set aws.roleArn="arn:aws:iam::${{ steps.aws.outputs.account }}:role/$PROJECT-$ENVIRONMENT-middleware" \
+            --set aws.region="$AWS_REGION" \
+            --set aws.databaseSecretId="$PROJECT/$ENVIRONMENT/database" \
+            --set aws.applicationSecretId="$PROJECT/$ENVIRONMENT/application" \
+            --atomic --timeout 8m
+
+      # --atomic only catches "the pods never became ready". A pod can be
+      # ready and still be broken, so check something the probe does not.
+      #
+      # Logging in for real exercises the database, the JWT signing key and the
+      # Secrets Manager read - none of which the readiness probe covers.
+      - name: Verify
+        run: |
+          kubectl run "verify-mw-${SHA:0:8}-${GITHUB_RUN_ATTEMPT}" \
+            --rm --attach --restart=Never -q \
+            -n "$NAMESPACE" --image=curlimages/curl:8.11.1 -- \
+            -fsS --max-time 15 -X POST http://middleware:8080/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"admin@aiinterview.local","password":"Admin@12345"}' \
+            -o /dev/null
+
+      # Only when Deploy itself succeeded. If --atomic failed it has already
+      # rolled back, and rolling back again would drop a second revision.
+      - name: Roll back
+        if: failure() && steps.deploy.outcome == 'success'
+        run: |
+          echo "::error::Verification failed after a successful rollout - rolling back"
+          helm rollback middleware -n "$NAMESPACE" --wait --timeout 5m
+          kubectl get pods -n "$NAMESPACE" -l app=middleware
+
+      - name: Show what is running
+        if: always()
+        run: kubectl get pods -n "$NAMESPACE" -l app=middleware

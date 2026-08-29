@@ -1,0 +1,3 @@
+# How often Prometheus scrapes. 30s is plenty for a teaching cluster; 15s is the
+# usual production figure and doubles the series stored for no benefit here.
+scrapeInterval: 30s
