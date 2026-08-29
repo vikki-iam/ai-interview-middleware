@@ -35,6 +35,14 @@ env:
   # for a manual dispatch, where workflow_run is empty.
   SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+# One deploy at a time. Three runs raced here once and left the release stuck
+# in pending-install, which blocks every later run with "another operation is
+# in progress". Queue instead of cancelling: a half-applied release is worse
+# than a slow one.
+concurrency:
+  group: deploy-middleware
+  cancel-in-progress: false
+
 permissions:
   contents: read
   id-token: write
@@ -98,6 +106,20 @@ jobs:
       # "You must be logged in to the server"
       - name: Get cluster credentials
         run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER"
+
+      # helm refuses to act on a release left mid-operation by an interrupted
+      # run, and there is no --force for that state. Clearing it here keeps a
+      # crashed run from blocking every deploy that follows.
+      - name: Clear a stuck release
+        run: |
+          STATUS=$(helm list -n "$NAMESPACE" --all --filter '^middleware$' -o json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['status'] if d else 'none')")
+          echo "current release status: $STATUS"
+          case "$STATUS" in
+            pending-*|failed)
+              echo "::warning::Release is '$STATUS' - uninstalling before deploy"
+              helm uninstall middleware -n "$NAMESPACE" --wait --timeout 3m || true
+              ;;
+          esac
 
       # No database host and no password here. The pod reads them from Secrets
       # Manager itself, using the IAM role passed below.
