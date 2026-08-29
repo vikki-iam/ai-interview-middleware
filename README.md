@@ -25,6 +25,13 @@ Flyway runs on startup: `V1__create_core_schema`, `V2__create_ai_schema`,
 `V3__seed_reference_data`. **V2 creates the `ai_*` tables the AI service maps**,
 so this service must be deployed before the AI service is useful.
 
+## Docs
+
+- [`docs/irsa.html`](docs/irsa.html) - **Pods Without Passwords**: how this service reaches
+  AWS Secrets Manager with no access key, the IRSA token exchange step by step, and the
+  difference between IRSA and plain OIDC. Written for engineers new to AWS identity.
+  Open the file in a browser.
+
 ## Configuration
 
 No credential lives in this repo, in the image, or in a Kubernetes Secret. In

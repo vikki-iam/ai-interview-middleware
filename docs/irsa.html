@@ -1,0 +1,1149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A beginner's reference to IRSA on EKS - why pods should never hold access keys, how the token exchange works, and how IRSA differs from plain OIDC.">
+<style>*,*::before,*::after{box-sizing:border-box}body{margin:0}</style>
+<title>Pods Without Passwords</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  /* ---------- tokens: light is the base, both dark paths redefine only these ---------- */
+  :root {
+    --paper:      #F4F6F8;
+    --surface:    #FFFFFF;
+    --surface-2:  #EDF0F3;
+    --ink:        #151A20;
+    --ink-soft:   #58636E;
+    --ink-faint:  #8A949E;
+    --rule:       #DCE1E6;
+    --rule-soft:  #E8ECEF;
+
+    --brass:      #966C24;
+    --brass-ink:  #7A5718;
+    --brass-wash: #F5EBD8;
+    --brass-edge: #E0CCA4;
+
+    --verified:      #38704C;
+    --verified-wash: #E2EFE7;
+    --denied:        #9B3F30;
+    --denied-wash:   #F7E5E1;
+
+    --slate:      #3C5771;
+    --slate-wash: #E5EBF1;
+
+    --shadow: 0 1px 2px rgba(21, 26, 32, .05), 0 8px 24px -12px rgba(21, 26, 32, .18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #11151A;
+      --surface:    #171D24;
+      --surface-2:  #1F262E;
+      --ink:        #E4E9ED;
+      --ink-soft:   #9BA6B1;
+      --ink-faint:  #6E7A85;
+      --rule:       #2A323B;
+      --rule-soft:  #222933;
+
+      --brass:      #D3A257;
+      --brass-ink:  #E2B778;
+      --brass-wash: #302617;
+      --brass-edge: #4A3B21;
+
+      --verified:      #6DB187;
+      --verified-wash: #1B2C22;
+      --denied:        #D98572;
+      --denied-wash:   #33201C;
+
+      --slate:      #8AA7C4;
+      --slate-wash: #1C2530;
+
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px -12px rgba(0, 0, 0, .6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #11151A;
+    --surface:    #171D24;
+    --surface-2:  #1F262E;
+    --ink:        #E4E9ED;
+    --ink-soft:   #9BA6B1;
+    --ink-faint:  #6E7A85;
+    --rule:       #2A323B;
+    --rule-soft:  #222933;
+
+    --brass:      #D3A257;
+    --brass-ink:  #E2B778;
+    --brass-wash: #302617;
+    --brass-edge: #4A3B21;
+
+    --verified:      #6DB187;
+    --verified-wash: #1B2C22;
+    --denied:        #D98572;
+    --denied-wash:   #33201C;
+
+    --slate:      #8AA7C4;
+    --slate-wash: #1C2530;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px -12px rgba(0, 0, 0, .6);
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Public Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+    padding: 0 1.25rem 6rem;
+  }
+
+  /* single reading column, with a wider lane for figures and tables */
+  .wrap {
+    max-width: 44rem;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.35rem;
+  }
+  .wide { max-width: 60rem; margin-left: auto; margin-right: auto; width: 100%; }
+
+  h1, h2, h3 {
+    font-family: Newsreader, ui-serif, Georgia, "Times New Roman", serif;
+    text-wrap: balance;
+    margin: 0;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  h1 { font-size: clamp(2.4rem, 6vw, 3.4rem); line-height: 1.06; }
+  h2 { font-size: clamp(1.5rem, 3.4vw, 1.95rem); line-height: 1.18; }
+  h3 {
+    font-size: 1.12rem;
+    line-height: 1.35;
+    font-weight: 600;
+    font-family: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0;
+  }
+  p { margin: 0; }
+  a { color: var(--brass-ink); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--brass);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+  strong { font-weight: 600; }
+
+  code, kbd, pre, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  :not(pre) > code {
+    font-size: .855em;
+    background: var(--surface-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    padding: .1em .34em;
+    word-break: break-word;
+  }
+
+  .eyebrow {
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--brass);
+    font-family: "Public Sans", sans-serif;
+  }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    padding: 4.5rem 0 2.25rem;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+  .lede {
+    font-size: 1.2rem;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 34rem;
+  }
+  .stamp {
+    display: inline-flex;
+    align-items: baseline;
+    gap: .55rem;
+    align-self: flex-start;
+    border: 1px solid var(--brass-edge);
+    background: var(--brass-wash);
+    color: var(--brass-ink);
+    border-radius: 3px;
+    padding: .3rem .65rem;
+    font-size: .74rem;
+    font-weight: 600;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .meta {
+    font-size: .82rem;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem 1.1rem;
+  }
+
+  /* ---------- sections ---------- */
+  section {
+    padding-top: 3.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.35rem;
+  }
+  .section-head { display: flex; flex-direction: column; gap: .5rem; }
+
+  /* ---------- callouts ---------- */
+  .note {
+    border-left: 3px solid var(--brass);
+    background: var(--surface);
+    border-radius: 0 6px 6px 0;
+    padding: 1rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    font-size: .95rem;
+  }
+  .note.warn { border-left-color: var(--denied); }
+  .note.good { border-left-color: var(--verified); }
+  .note .note-title {
+    font-weight: 700;
+    font-size: .74rem;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--brass);
+  }
+  .note.warn .note-title { color: var(--denied); }
+  .note.good .note-title { color: var(--verified); }
+
+  /* ---------- code ---------- */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 1rem 1.15rem;
+    overflow-x: auto;
+    margin: 0;
+    font-size: .84rem;
+    line-height: 1.62;
+    color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+  pre .c  { color: var(--ink-faint); }
+  pre .k  { color: var(--brass-ink); font-weight: 500; }
+  pre .ok { color: var(--verified); font-weight: 500; }
+  pre .no { color: var(--denied); font-weight: 500; }
+
+  /* ---------- tables ---------- */
+  .table-scroll { overflow-x: auto; box-shadow: var(--shadow); border-radius: 7px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    font-size: .9rem;
+    min-width: 34rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .72rem .95rem;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  thead th {
+    font-size: .7rem;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 700;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { font-size: .82em; }
+
+  /* ---------- the two-column compare ---------- */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 46rem) { .compare { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1.15rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: .6rem;
+    box-shadow: var(--shadow);
+  }
+  .card .card-tag {
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .card h3 { font-size: 1.05rem; }
+  .card p { font-size: .92rem; color: var(--ink-soft); }
+  .card.is-protocol { border-top: 3px solid var(--slate); }
+  .card.is-pattern  { border-top: 3px solid var(--brass); }
+
+  /* ---------- numbered sequence ---------- */
+  ol.steps {
+    list-style: none;
+    counter-reset: step;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .1rem;
+  }
+  ol.steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2.1rem 1fr;
+    gap: 0 .9rem;
+    padding: .85rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  ol.steps > li:last-child { border-bottom: none; }
+  ol.steps > li::before {
+    content: counter(step);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .78rem;
+    font-weight: 600;
+    color: var(--brass);
+    background: var(--brass-wash);
+    border: 1px solid var(--brass-edge);
+    border-radius: 50%;
+    width: 1.7rem;
+    height: 1.7rem;
+    display: grid;
+    place-items: center;
+    margin-top: .12rem;
+    font-variant-numeric: tabular-nums;
+  }
+  ol.steps .step-t { font-weight: 600; font-size: .97rem; }
+  ol.steps .step-d { color: var(--ink-soft); font-size: .93rem; margin-top: .15rem; }
+
+  /* ---------- figures ---------- */
+  figure {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+  }
+  .fig-frame {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1.4rem 1.1rem;
+    overflow-x: auto;
+    box-shadow: var(--shadow);
+  }
+  .fig-frame svg { max-width: 100%; height: auto; display: block; margin: 0 auto; color: var(--ink); }
+  figcaption {
+    font-size: .84rem;
+    color: var(--ink-faint);
+    line-height: 1.5;
+    max-width: 42rem;
+  }
+  .svg-label { font-family: "Public Sans", sans-serif; font-size: 12px; fill: currentColor; }
+  .svg-label-sm { font-family: "Public Sans", sans-serif; font-size: 10.5px; fill: currentColor; opacity: .72; }
+  .svg-mono { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; fill: currentColor; }
+  .svg-box { fill: var(--surface-2); stroke: currentColor; stroke-opacity: .3; }
+  .svg-edge { stroke: currentColor; stroke-opacity: .45; fill: none; }
+  .svg-accent { stroke: var(--brass); fill: none; }
+  .svg-accent-fill { fill: var(--brass); }
+  .svg-slate { stroke: var(--slate); fill: none; }
+  .svg-slate-fill { fill: var(--slate); }
+
+  /* ---------- sub-string anatomy ---------- */
+  .anatomy {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 1.1rem 1.2rem;
+    overflow-x: auto;
+    box-shadow: var(--shadow);
+    font-size: .86rem;
+    line-height: 2.1;
+  }
+  .anatomy .seg { padding: .16rem .3rem; border-radius: 3px; white-space: nowrap; }
+  .seg-fixed { background: var(--surface-2); color: var(--ink-soft); }
+  .seg-ns    { background: var(--slate-wash); color: var(--slate); font-weight: 600; }
+  .seg-sa    { background: var(--brass-wash); color: var(--brass-ink); font-weight: 600; }
+  .anatomy-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1.4rem;
+    margin-top: .9rem;
+    font-size: .82rem;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+  .anatomy-key span { display: inline-flex; align-items: center; gap: .45rem; }
+  .dot { display: inline-block; width: .62rem; height: .62rem; border-radius: 2px; flex: none; }
+  .dot-ns { background: var(--slate); }
+  .dot-sa { background: var(--brass); }
+
+  /* ---------- misc ---------- */
+  ul.plain { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: .45rem; }
+  ul.plain li { padding-left: .15rem; }
+  ul.plain li::marker { color: var(--brass); }
+
+  hr.rule { border: none; border-top: 1px solid var(--rule); margin: 0; }
+
+  .pill {
+    display: inline-block;
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: .16rem .5rem;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .pill-ok { background: var(--verified-wash); color: var(--verified); }
+  .pill-no { background: var(--denied-wash);   color: var(--denied); }
+
+  footer.end {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+    font-size: .85rem;
+    color: var(--ink-faint);
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color .15s ease; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="stamp">Platform Engineering · Reference</span>
+    <h1>Pods Without Passwords</h1>
+    <p class="lede">
+      How a container running in EKS reaches an AWS service with no access key stored anywhere —
+      and why IRSA and OIDC are not two words for the same thing.
+    </p>
+    <p class="meta">
+      <span>Written against cluster <code>ai-interview-1</code></span>
+      <span>Region ap-south-1</span>
+      <span>For engineers new to AWS identity</span>
+    </p>
+  </header>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="section-head">
+      <span class="eyebrow">The problem</span>
+      <h2>Your pod needs a password it must never have</h2>
+    </div>
+
+    <p>
+      Our middleware pod has to read a database password out of AWS Secrets Manager. To call
+      any AWS API you must prove who you are. So the pod needs AWS credentials.
+    </p>
+
+    <p>
+      The obvious answer is to create an IAM user, generate an access key, and hand it to the pod
+      as an environment variable or a Kubernetes Secret. Almost every tutorial written before 2020
+      does this. It works. It is also the single most common way companies get breached.
+    </p>
+
+    <p>Here is what you have actually done when you take that shortcut:</p>
+
+    <ul class="plain">
+      <li><strong>The key never expires.</strong> It is valid until a human remembers to rotate it. Most never get rotated.</li>
+      <li><strong>It is copied everywhere.</strong> Your laptop, CI logs, a Slack message, a teammate's <code>.env</code>. Each copy is a new place it can leak from.</li>
+      <li><strong>It is not attached to anything.</strong> A leaked key works from any machine on earth. AWS cannot tell your pod from an attacker in another country.</li>
+      <li><strong>You cannot tell it was stolen.</strong> There is no signal. Someone else using your key looks exactly like you using your key.</li>
+    </ul>
+
+    <div class="note warn">
+      <span class="note-title">The rule</span>
+      <p>
+        A long-lived credential sitting in a file is a liability that grows every day it exists.
+        The goal is not to store it more carefully. The goal is to <strong>never have one</strong>.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="section-head">
+      <span class="eyebrow">The answer</span>
+      <h2>IRSA in one sentence</h2>
+    </div>
+
+    <div class="note good">
+      <span class="note-title">IRSA — IAM Roles for Service Accounts</span>
+      <p>
+        Let a pod <em>prove which Kubernetes ServiceAccount it is running as</em>, and let AWS
+        trade that proof for temporary credentials to an IAM role.
+      </p>
+    </div>
+
+    <p>
+      Nothing is stored. The pod holds a short-lived token that Kubernetes signs and rotates for it,
+      and exchanges that token for AWS credentials that expire in about an hour. Steal the token and
+      you have minutes, not forever. Steal the pod's disk and you find no secret at all, because
+      there isn't one.
+    </p>
+
+    <p>
+      That is the entire idea. Everything below is the machinery that makes it true.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="wide">
+    <div class="section-head" style="max-width:44rem;margin:0 auto;width:100%">
+      <span class="eyebrow">The question everyone asks</span>
+      <h2>OIDC vs IRSA — what's the difference?</h2>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <p>
+        This trips up almost everyone, because the two words appear in the same sentences and the
+        same setup guides. They are not alternatives, and they are not synonyms. They sit at
+        different levels.
+      </p>
+    </div>
+
+    <div class="compare">
+      <div class="card is-protocol">
+        <span class="card-tag">A standard — level 1</span>
+        <h3>OIDC — OpenID Connect</h3>
+        <p>
+          An open industry protocol for proving identity with a signed token. Not AWS. Not
+          Kubernetes. It is the same standard behind "Sign in with Google".
+        </p>
+        <p>
+          It defines how an <em>issuer</em> signs a token, how a token says who the holder is,
+          and how anyone can fetch the issuer's public keys to verify a signature they did not
+          create.
+        </p>
+      </div>
+
+      <div class="card is-pattern">
+        <span class="card-tag">A specific use of it — level 2</span>
+        <h3>IRSA — IAM Roles for Service Accounts</h3>
+        <p>
+          AWS's name for one particular application of OIDC: your <strong>EKS cluster</strong>
+          acts as the issuer, and a <strong>pod's ServiceAccount</strong> is the identity in
+          the token.
+        </p>
+        <p>
+          IRSA is OIDC plus EKS-specific plumbing — the projected token file, the
+          <code>eks.amazonaws.com/role-arn</code> annotation, and the webhook that wires
+          them together.
+        </p>
+      </div>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <p>
+        <strong>OIDC is the protocol. IRSA is a pattern built with it.</strong>
+        Asking "should I use OIDC or IRSA?" is like asking "should I use HTTP or a REST API?" —
+        one is made out of the other.
+      </p>
+
+      <h3>Proof: our AWS account has two OIDC providers</h3>
+
+      <p>
+        The clearest way to see the distinction is to look at what is actually registered in
+        our account. There are two, and only one of them is IRSA:
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Registered issuer</th>
+            <th>Who presents the token</th>
+            <th>Identity in the token</th>
+            <th>Called IRSA?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>oidc.eks.ap-south-1.amazonaws.com/id/FE398F…</code></td>
+            <td>A pod in our EKS cluster</td>
+            <td><code>system:serviceaccount:default:middleware</code></td>
+            <td><span class="pill pill-ok">Yes — this is IRSA</span></td>
+          </tr>
+          <tr>
+            <td><code>token.actions.githubusercontent.com</code></td>
+            <td>A GitHub Actions workflow run</td>
+            <td><code>repo:vikki-iam/react-app-k8s:ref:refs/heads/main</code></td>
+            <td><span class="pill pill-no">No — just OIDC</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <p>
+        Same protocol. Same AWS API call (<code>sts:AssumeRoleWithWebIdentity</code>). Same kind of
+        trust policy. The <em>only</em> differences are who issues the token and what the identity
+        string looks like.
+      </p>
+
+      <p>
+        When our GitHub Actions workflow assumes a role to deploy, that is OIDC federation — and
+        nobody calls it IRSA, because there is no ServiceAccount and no EKS. When our middleware pod
+        assumes a role to read Secrets Manager, that is the same mechanism, and AWS gave that
+        specific arrangement the name IRSA.
+      </p>
+
+      <div class="note">
+        <span class="note-title">Remember it this way</span>
+        <p>
+          OIDC answers <em>"how do you prove identity without a shared password?"</em><br>
+          IRSA answers <em>"how does a Kubernetes pod, specifically, do that on AWS?"</em>
+        </p>
+      </div>
+    </div>
+
+    <figure class="wide">
+      <div class="fig-frame">
+        <svg viewBox="0 0 760 300" role="img" aria-label="Two OIDC issuers — an EKS cluster and GitHub Actions — both exchange signed tokens at AWS STS for temporary credentials; only the EKS path is called IRSA.">
+          <defs>
+            <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" class="svg-accent-fill"/>
+            </marker>
+            <marker id="ar-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" class="svg-slate-fill"/>
+            </marker>
+          </defs>
+
+          <!-- left: two issuers -->
+          <text x="20" y="24" class="svg-label-sm" style="letter-spacing:.1em">TOKEN ISSUERS</text>
+
+          <rect x="20" y="42" width="212" height="76" rx="6" class="svg-box"/>
+          <text x="36" y="68" class="svg-label" style="font-weight:600">EKS cluster</text>
+          <text x="36" y="87" class="svg-mono" style="font-size:9.5px">oidc.eks.ap-south-1…/FE398F…</text>
+          <text x="36" y="105" class="svg-label-sm">issues a token to every pod</text>
+
+          <rect x="20" y="182" width="212" height="76" rx="6" class="svg-box"/>
+          <text x="36" y="208" class="svg-label" style="font-weight:600">GitHub Actions</text>
+          <text x="36" y="227" class="svg-mono" style="font-size:9.5px">token.actions.githubusercontent.com</text>
+          <text x="36" y="245" class="svg-label-sm">issues a token to every run</text>
+
+          <!-- middle: STS -->
+          <rect x="330" y="106" width="130" height="88" rx="6" class="svg-box" stroke-width="1.5"/>
+          <text x="395" y="140" class="svg-label" style="font-weight:600" text-anchor="middle">AWS STS</text>
+          <text x="395" y="159" class="svg-label-sm" text-anchor="middle">verifies signature</text>
+          <text x="395" y="175" class="svg-label-sm" text-anchor="middle">checks trust policy</text>
+
+          <!-- arrows in -->
+          <path d="M 232 80 C 285 80, 285 132, 328 132" class="svg-accent" stroke-width="1.6" marker-end="url(#ar-a)"/>
+          <text x="248" y="72" class="svg-label-sm" style="opacity:1; fill:var(--brass)">signed token</text>
+
+          <path d="M 232 220 C 285 220, 285 168, 328 168" class="svg-slate" stroke-width="1.6" marker-end="url(#ar-s)"/>
+          <text x="248" y="238" class="svg-label-sm" style="opacity:1; fill:var(--slate)">signed token</text>
+
+          <!-- right: credentials -->
+          <rect x="558" y="106" width="182" height="88" rx="6" class="svg-box"/>
+          <text x="576" y="140" class="svg-label" style="font-weight:600">Temporary credentials</text>
+          <text x="576" y="159" class="svg-label-sm">expire in ~1 hour</text>
+          <text x="576" y="175" class="svg-label-sm">scoped to one IAM role</text>
+
+          <path d="M 462 150 L 554 150" class="svg-edge" stroke-width="1.6" marker-end="url(#ar-a)"/>
+
+          <!-- the label that carries the whole point -->
+          <text x="20" y="148" class="svg-label-sm" style="opacity:1; fill:var(--brass); font-weight:600">↑ this path is called IRSA</text>
+          <text x="20" y="288" class="svg-label-sm" style="opacity:1; fill:var(--slate); font-weight:600">↑ this path is just OIDC federation</text>
+        </svg>
+      </div>
+      <figcaption>
+        Both issuers do the identical thing: sign a token that names an identity, and let AWS STS
+        verify it and hand back temporary credentials. Only the EKS-to-pod arrangement gets the
+        name IRSA. The mechanism is shared; the name is specific to the Kubernetes case.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="wide">
+    <div class="section-head" style="max-width:44rem;margin:0 auto;width:100%">
+      <span class="eyebrow">The mechanism</span>
+      <h2>What actually happens when the pod starts</h2>
+    </div>
+
+    <figure class="wide">
+      <div class="fig-frame">
+        <svg viewBox="0 0 740 340" role="img" aria-label="Six-step flow: the webhook injects a projected token into the pod, the SDK sends it to STS, STS verifies the signature against the cluster's public keys and checks the trust policy, then returns temporary credentials the pod uses to read Secrets Manager.">
+          <defs>
+            <marker id="fl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" class="svg-accent-fill"/>
+            </marker>
+            <marker id="fl-q" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" fill-opacity=".5"/>
+            </marker>
+          </defs>
+
+          <!-- lane labels -->
+          <text x="14" y="18" class="svg-label-sm" style="letter-spacing:.1em">IN THE CLUSTER</text>
+          <text x="432" y="18" class="svg-label-sm" style="letter-spacing:.1em">IN AWS</text>
+          <line x1="410" y1="28" x2="410" y2="326" class="svg-edge" stroke-dasharray="4 4" stroke-width="1"/>
+
+          <!-- pod -->
+          <rect x="14" y="34" width="184" height="96" rx="6" class="svg-box"/>
+          <text x="30" y="58" class="svg-label" style="font-weight:600">middleware pod</text>
+          <text x="30" y="77" class="svg-mono" style="font-size:9.5px">serviceAccount: middleware</text>
+          <text x="30" y="98" class="svg-label-sm">holds no AWS key</text>
+          <text x="30" y="114" class="svg-label-sm">ever, at any point</text>
+
+          <!-- token file -->
+          <rect x="14" y="168" width="184" height="72" rx="6" class="svg-box"/>
+          <text x="30" y="192" class="svg-label" style="font-weight:600">projected token</text>
+          <text x="30" y="210" class="svg-mono" style="font-size:9px">/var/run/secrets/…/token</text>
+          <text x="30" y="228" class="svg-label-sm">signed by the cluster, rotates</text>
+
+          <!-- webhook -->
+          <rect x="240" y="34" width="140" height="72" rx="6" class="svg-box"/>
+          <text x="310" y="58" class="svg-label" style="font-weight:600" text-anchor="middle">EKS webhook</text>
+          <text x="310" y="76" class="svg-label-sm" text-anchor="middle">reads the annotation</text>
+          <text x="310" y="92" class="svg-label-sm" text-anchor="middle">mounts the token</text>
+
+          <!-- STS -->
+          <rect x="440" y="34" width="150" height="96" rx="6" class="svg-box" stroke-width="1.5"/>
+          <text x="515" y="58" class="svg-label" style="font-weight:600" text-anchor="middle">AWS STS</text>
+          <text x="515" y="78" class="svg-label-sm" text-anchor="middle">verify signature</text>
+          <text x="515" y="95" class="svg-label-sm" text-anchor="middle">match sub against</text>
+          <text x="515" y="111" class="svg-label-sm" text-anchor="middle">the trust policy</text>
+
+          <!-- public keys -->
+          <rect x="440" y="168" width="150" height="60" rx="6" class="svg-box"/>
+          <text x="515" y="192" class="svg-label" style="font-weight:600" text-anchor="middle">cluster public keys</text>
+          <text x="515" y="210" class="svg-label-sm" text-anchor="middle">fetched from the issuer</text>
+
+          <!-- secrets manager -->
+          <rect x="440" y="262" width="284" height="60" rx="6" class="svg-box"/>
+          <text x="458" y="286" class="svg-label" style="font-weight:600">Secrets Manager</text>
+          <text x="458" y="305" class="svg-mono" style="font-size:9.5px">ai-interview/dev/database</text>
+
+          <!-- creds -->
+          <rect x="622" y="34" width="102" height="96" rx="6" class="svg-box"/>
+          <text x="673" y="62" class="svg-label" style="font-weight:600" text-anchor="middle">temp creds</text>
+          <text x="673" y="82" class="svg-label-sm" text-anchor="middle">~1 hour</text>
+          <text x="673" y="99" class="svg-label-sm" text-anchor="middle">one role</text>
+
+          <!-- flow arrows -->
+          <path d="M 198 70 L 236 70" class="svg-accent" stroke-width="1.6" marker-end="url(#fl)"/>
+          <text x="204" y="60" class="svg-mono" style="font-size:9px; fill:var(--brass)">1</text>
+
+          <path d="M 300 106 L 300 148 L 106 148 L 106 164" class="svg-accent" stroke-width="1.6" marker-end="url(#fl)"/>
+          <text x="286" y="122" class="svg-mono" style="font-size:9px; fill:var(--brass)">2</text>
+
+          <path d="M 198 200 C 300 200, 340 90, 436 82" class="svg-accent" stroke-width="1.6" marker-end="url(#fl)"/>
+          <text x="252" y="182" class="svg-label-sm" style="opacity:1; fill:var(--brass)">3 · present token</text>
+
+          <path d="M 515 168 L 515 134" class="svg-edge" stroke-width="1.4" marker-end="url(#fl-q)"/>
+          <text x="524" y="154" class="svg-label-sm">4 · verify</text>
+
+          <path d="M 592 82 L 618 82" class="svg-accent" stroke-width="1.6" marker-end="url(#fl)"/>
+          <text x="596" y="72" class="svg-mono" style="font-size:9px; fill:var(--brass)">5</text>
+
+          <path d="M 673 130 L 673 258" class="svg-accent" stroke-width="1.6" marker-end="url(#fl)"/>
+          <text x="682" y="200" class="svg-label-sm" style="opacity:1; fill:var(--brass)">6 · read</text>
+        </svg>
+      </div>
+      <figcaption>
+        The pod never possesses a credential it could leak. It possesses a signed statement about
+        who it is, and AWS decides — every hour, from scratch — whether that statement earns access.
+      </figcaption>
+    </figure>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%">
+      <ol class="steps">
+        <li>
+          <div>
+            <div class="step-t">The webhook spots the annotation</div>
+            <div class="step-d">
+              Your pod uses ServiceAccount <code>middleware</code>. That ServiceAccount carries the
+              annotation <code>eks.amazonaws.com/role-arn</code>. An admission webhook in EKS sees it
+              as the pod is created.
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            <div class="step-t">A token is mounted into the pod</div>
+            <div class="step-d">
+              Kubernetes writes a signed JWT to a file inside the container and sets
+              <code>AWS_WEB_IDENTITY_TOKEN_FILE</code> and <code>AWS_ROLE_ARN</code>. The token says
+              "the holder is ServiceAccount <code>middleware</code> in namespace <code>default</code>",
+              and Kubernetes rotates it automatically.
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            <div class="step-t">The AWS SDK presents the token</div>
+            <div class="step-d">
+              You write no code for this. boto3, the Java SDK and every other AWS SDK check those
+              environment variables as part of their default credential chain, then call
+              <code>sts:AssumeRoleWithWebIdentity</code>.
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            <div class="step-t">STS verifies the signature, then the trust policy</div>
+            <div class="step-d">
+              Two separate checks. First: is this token really signed by the issuer we registered?
+              STS fetches your cluster's public keys to confirm. Second: does the identity inside
+              the token match what this role's trust policy allows? Both must pass.
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            <div class="step-t">Temporary credentials come back</div>
+            <div class="step-d">
+              An access key, a secret, and a session token — valid for about an hour, scoped to
+              exactly one IAM role. The SDK refreshes them before they expire, silently.
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            <div class="step-t">The pod calls AWS</div>
+            <div class="step-d">
+              <code>GetSecretValue</code> on the database secret succeeds, because the role's
+              permission policy allows it. Anything the policy does not allow still fails —
+              authentication and authorization stay separate.
+            </div>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="section-head">
+      <span class="eyebrow">The four pieces</span>
+      <h2>What you actually create</h2>
+    </div>
+
+    <p>
+      For all that machinery, there are only four things a human sets up. The first is once per
+      cluster. The other three are once per service.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Piece</th><th>What it does</th><th>How often</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>OIDC provider</strong><br><span style="color:var(--ink-faint);font-size:.86em">in IAM</span></td>
+            <td>Tells AWS "tokens signed by this cluster are worth listening to". Without it, STS has no reason to trust anything your cluster says.</td>
+            <td>Once per cluster</td>
+          </tr>
+          <tr>
+            <td><strong>IAM role</strong></td>
+            <td>The identity the pod becomes. Nothing special about it — an ordinary role.</td>
+            <td>Once per service</td>
+          </tr>
+          <tr>
+            <td><strong>Trust policy</strong><br><span style="color:var(--ink-faint);font-size:.86em">on the role</span></td>
+            <td><em>Who</em> may assume this role. This is where the ServiceAccount name is pinned. The part that goes wrong.</td>
+            <td>Once per service</td>
+          </tr>
+          <tr>
+            <td><strong>Permission policy</strong><br><span style="color:var(--ink-faint);font-size:.86em">on the role</span></td>
+            <td><em>What</em> the role may do once assumed. Ours allows reading two secrets, nothing else.</td>
+            <td>Once per service</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <span class="note-title">Trust vs permission</span>
+      <p>
+        Freshers mix these up constantly. <strong>Trust policy = who can become this role.</strong>
+        <strong>Permission policy = what the role can do.</strong> A role with a perfect permission
+        policy and a wrong trust policy fails before it ever gets used — the pod cannot become the
+        role at all.
+      </p>
+    </div>
+
+    <h3>Step 1 — register the cluster as an OIDC provider</h3>
+    <p>
+      Do this once. If you have already installed the AWS Load Balancer Controller on the cluster,
+      it is already done — that controller uses IRSA too.
+    </p>
+<pre><span class="c"># check whether it already exists</span>
+aws iam list-open-id-connect-providers
+
+<span class="c"># create it if not (eksctl does the fiddly parts for you)</span>
+eksctl utils associate-iam-oidc-provider \
+  --region ap-south-1 --cluster ai-interview-1 --approve</pre>
+
+    <h3>Step 2 — write the trust policy</h3>
+    <p>
+      This is the file that says which ServiceAccount may assume the role. Every value in it
+      matters.
+    </p>
+<pre>{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::043083733056:oidc-provider/<span class="k">$OIDC</span>"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "<span class="k">$OIDC</span>:sub": "<span class="ok">system:serviceaccount:default:middleware</span>",
+        "<span class="k">$OIDC</span>:aud": "sts.amazonaws.com"
+      }
+    }
+  }]
+}</pre>
+
+    <p>
+      The <code>aud</code> condition is not optional decoration. Without it the role is assumable
+      more broadly than you intended. Always include it.
+    </p>
+
+    <h3>Step 3 — create the role and attach permissions</h3>
+<pre>aws iam create-role --role-name ai-interview-dev-middleware \
+  --assume-role-policy-document file://trust.json
+
+aws iam put-role-policy --role-name ai-interview-dev-middleware \
+  --policy-name read-secrets --policy-document file://read-secrets.json</pre>
+
+    <h3>Step 4 — annotate the ServiceAccount</h3>
+    <p>
+      This is the Kubernetes half. In our Helm chart it lives in
+      <code>templates/serviceaccount.yaml</code>:
+    </p>
+<pre>apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: <span class="ok">middleware</span>
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::043083733056:role/ai-interview-dev-middleware</pre>
+
+    <div class="note warn">
+      <span class="note-title">Do not use eksctl create iamserviceaccount here</span>
+      <p>
+        That command creates the role <em>and</em> a ServiceAccount. If your Helm chart already
+        defines the ServiceAccount — ours does — you end up with two competing definitions and a
+        confusing failure. Create the role only, and let Helm own the ServiceAccount.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="wide">
+    <div class="section-head" style="max-width:44rem;margin:0 auto;width:100%">
+      <span class="eyebrow">The part that breaks</span>
+      <h2>The <code style="font-size:.8em">sub</code> string must match exactly</h2>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <p>
+        If IRSA fails, it is almost always this one line. The <code>sub</code> claim is a string
+        Kubernetes builds from the pod's namespace and ServiceAccount name, and STS compares it
+        character for character with what your trust policy says. There is no partial match and
+        no helpful error.
+      </p>
+    </div>
+
+    <div class="anatomy wide">
+      <span class="seg seg-fixed mono">system:serviceaccount</span><span class="mono" style="color:var(--ink-faint)">:</span><span class="seg seg-ns mono">default</span><span class="mono" style="color:var(--ink-faint)">:</span><span class="seg seg-sa mono">middleware</span>
+      <div class="anatomy-key">
+        <span><i class="dot dot-ns"></i> the <strong>namespace</strong> you deploy into — must equal the Helm <code>--namespace</code> flag</span>
+        <span><i class="dot dot-sa"></i> the <strong>ServiceAccount name</strong> — must equal <code>metadata.name</code> in the chart</span>
+      </div>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <p>
+        Three strings have to agree, and they live in three different files that nothing
+        cross-checks for you:
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Where</th><th>What it says</th><th>Set by</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>IAM trust policy</td>
+            <td><code>system:serviceaccount:<strong>default</strong>:<strong>middleware</strong></code></td>
+            <td>you, in <code>trust.json</code></td>
+          </tr>
+          <tr>
+            <td>Helm chart</td>
+            <td><code>metadata.name: <strong>middleware</strong></code></td>
+            <td><code>templates/serviceaccount.yaml</code></td>
+          </tr>
+          <tr>
+            <td>Deploy workflow</td>
+            <td><code>--namespace <strong>default</strong></code></td>
+            <td><code>NAMESPACE</code> in the workflow env</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <div class="note warn">
+        <span class="note-title">A real mistake from this project</span>
+        <p>
+          When we added our middleware repo to the <em>GitHub Actions</em> trust policy — the other
+          OIDC provider — the string was written as
+          <code style="color:var(--denied)">…/ai-interview-middleware:refs/heads/main</code>
+          instead of
+          <code style="color:var(--verified)">…/ai-interview-middleware:ref:refs/heads/main</code>.
+        </p>
+        <p>
+          One missing <code>ref:</code>. It looks almost right, and it never matches. Read these
+          strings character by character — your eyes will fill in what you expect to see.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section class="wide">
+    <div class="section-head" style="max-width:44rem;margin:0 auto;width:100%">
+      <span class="eyebrow">Debugging</span>
+      <h2>What the errors actually mean</h2>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%">
+      <p>
+        IRSA failures produce messages that point away from the real cause. This table is the
+        translation.
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th style="width:38%">Error in the pod logs</th><th>What it usually means</th><th>Fix</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Unable to load credentials from any of the providers in the chain</code></td>
+            <td>The pod got no token at all. The annotation is missing, or the pod is using a different ServiceAccount than you think.</td>
+            <td><code>kubectl get sa middleware -o yaml</code> and confirm the annotation is there</td>
+          </tr>
+          <tr>
+            <td><code>Not authorized to perform sts:AssumeRoleWithWebIdentity</code></td>
+            <td>Token arrived, signature verified, but the <code>sub</code> did not match the trust policy. Namespace or ServiceAccount name is wrong.</td>
+            <td>Compare all three strings in the table above, character by character</td>
+          </tr>
+          <tr>
+            <td><code>AccessDenied</code> on <code>GetSecretValue</code></td>
+            <td>The opposite problem — the pod <em>did</em> become the role. Trust is fine; the permission policy is too narrow or names the wrong ARN.</td>
+            <td>Check the resource ARNs in the permission policy, including the random suffix</td>
+          </tr>
+          <tr>
+            <td><code>InvalidIdentityToken</code></td>
+            <td>The cluster's OIDC provider is not registered in IAM, so STS will not trust the signature.</td>
+            <td><code>aws iam list-open-id-connect-providers</code></td>
+          </tr>
+          <tr>
+            <td>Pod is <code>Running</code> but never <code>Ready</code></td>
+            <td>Often not IRSA at all. The pod read its secret fine and is failing to reach the database.</td>
+            <td>Read the actual pod logs before blaming IRSA</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="max-width:44rem;margin:0 auto;width:100%;display:flex;flex-direction:column;gap:1.35rem">
+      <h3>Prove it works, from inside the cluster</h3>
+      <p>
+        The fastest confirmation. If this prints the role ARN, IRSA is working end to end and any
+        remaining problem is a permissions or application issue:
+      </p>
+<pre>kubectl run irsa-check --rm -it --restart=Never \
+  -n default --overrides='{"spec":{"serviceAccountName":"middleware"}}' \
+  --image=amazon/aws-cli -- sts get-caller-identity</pre>
+      <p>
+        The <code>Arn</code> in the output should read
+        <code>…:assumed-role/ai-interview-dev-middleware/…</code>. If it shows the node's instance
+        role instead, the pod fell back to the node — the annotation never took effect.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="section-head">
+      <span class="eyebrow">Recap</span>
+      <h2>The five things to remember</h2>
+    </div>
+
+    <ul class="plain">
+      <li><strong>No stored credential.</strong> That is the whole point. If your design still has a key in a file, you have not done IRSA.</li>
+      <li><strong>OIDC is the protocol; IRSA is AWS's use of it for EKS pods.</strong> Our account proves it — two OIDC providers, only one is IRSA.</li>
+      <li><strong>Trust policy is <em>who</em>; permission policy is <em>what</em>.</strong> They fail in different ways and the errors look nothing alike.</li>
+      <li><strong>The <code>sub</code> string is the failure point.</strong> Namespace and ServiceAccount name, matched exactly, across three files.</li>
+      <li><strong>Credentials expire in about an hour</strong> and refresh themselves. A stolen token is a short problem instead of a permanent one.</li>
+    </ul>
+
+    <div class="note good">
+      <span class="note-title">The mental model</span>
+      <p>
+        Old way: give the pod a key and hope nobody copies it.<br>
+        IRSA: give the pod a way to <em>prove who it is</em>, and let AWS decide, fresh, every hour.
+      </p>
+    </div>
+  </section>
+
+  <footer class="end">
+    <p>
+      Reference for the AI Interview Platform · cluster <code>ai-interview-1</code> ·
+      roles <code>ai-interview-dev-middleware</code> and <code>ai-interview-dev-ai-service</code>.
+    </p>
+    <p>
+      Every value shown is from the live setup, so you can check any claim here against the
+      real account rather than taking it on trust.
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>
